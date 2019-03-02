@@ -1,0 +1,9 @@
+[package]
+name = "halcyon"
+version = "0.1.0"
+authors = ["erak", "tekcor"]
+
+[dependencies]
+csv = "1"
+serde = "1"
+serde_derive = "1"
