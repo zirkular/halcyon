@@ -14,10 +14,22 @@ cd halcyon
 cargo build
 ```
 
-To run the application on a Twitter dataset:
+To run the application on a Twitter dataset using Cargo:
 
 ```
 cargo run /path/to/twitter.csv
+```
+or by calling the executable directly:
+```
+halcyon /path/to/twitter.csv
+```
+
+#### Preprocessing
+
+Halcyon can export the first N lines of an input file (helpful for development). It creates a file named `<filename>.N`, which results in `filename.csv.1000`:
+
+```
+halcyon filename.csv --export-raw 1000
 ```
 
 ### Contact
