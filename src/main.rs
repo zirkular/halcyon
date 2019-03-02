@@ -1,16 +1,20 @@
 extern crate csv;
 #[macro_use]
 extern crate serde_derive;
-extern crate clap; 
+extern crate clap;
+extern crate chrono;
+
+use chrono::{NaiveDateTime};
 
 use clap::{Arg, App};
 
+use std::collections::HashMap;
+use std::env;
 use std::error::Error;
-use std::process;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::prelude::*;
-use std::env;
+use std::process;
 
 use std::time::Instant;
 
@@ -23,10 +27,20 @@ struct Week {
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 struct Tweet {
     tweetid: String,
+    tweet_time: String,
     like_count: String,
     quoted_tweet_tweetid: String,
     in_reply_to_tweetid: String,
     is_retweet: String,
+    retweet_tweetid: String,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct GPUTweet {
+    tweet_id: i64,
+    tweet_time: i64,
+    ref_tweet_id: i64,
+    ref_tweet_time: i64,
 }
 
 fn export_raw(filename: String, limit: u64) -> Result<(), Box<Error>> {
@@ -47,23 +61,75 @@ fn export_raw(filename: String, limit: u64) -> Result<(), Box<Error>> {
     Ok(())
 }
 
-fn read_dataset(filename: String) -> Result<(), Box<Error>> {
-    let mut count = 0;
-    let mut tweets = Vec::new();
+fn process_dataset(filename: String) -> Result<(), Box<Error>> {
+    let output_filename = String::from(filename.clone() + ".out");
+    let mut retweet_misses = 0;
+    let mut tweets: HashMap<i64, Tweet> = HashMap::new();
+    let mut gpu_tweets = Vec::new();
 
     println!("Processing {} now. This may take a while...", filename);
+    let mut wtr = csv::Writer::from_path(output_filename.clone())?;
     let mut rdr = csv::Reader::from_path(filename)?;
     let mut iter = rdr.deserialize();
 
     while let Some(result) = iter.next() {
         let tweet: Tweet = result?;
-        count = count + 1;
-        if tweet.is_retweet == "True" {
-            tweets.push(tweet);
+        let tweet_id = tweet.tweetid.parse().unwrap();
+        tweets.insert(tweet_id, tweet);
+    }
+
+    for (key, tweet) in &tweets {
+        let mut retweet_id: i64 = 0;
+        let mut retweet_time = NaiveDateTime::from_timestamp(0, 0);
+
+        let is_retweet = match tweet.is_retweet.as_ref() {
+            "True" => true,
+            _ => false,
+        };
+        let reply_to_tweetid: i64 = match tweet.in_reply_to_tweetid.len() {
+            0 => 0,
+            _ => match tweet.in_reply_to_tweetid.parse() {
+                Ok(number) => number,
+                _ => 0
+            },
+        };
+
+        if is_retweet {
+            retweet_id = tweet.retweet_tweetid.parse().unwrap();     
+        }
+        if reply_to_tweetid > 0 {
+            retweet_id = reply_to_tweetid;
+        }
+
+        if is_retweet || reply_to_tweetid > 0 {
+            match tweets.get(&retweet_id) {
+                Some(ref retweet) => {
+                    retweet_time = NaiveDateTime::parse_from_str(retweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
+                },
+                _ => retweet_misses = retweet_misses + 1,
+            }
+            let ref_tweet_time = NaiveDateTime::parse_from_str(tweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
+
+            gpu_tweets.push(GPUTweet{
+                tweet_id: retweet_id,
+                tweet_time: retweet_time.timestamp(),
+                ref_tweet_id: key.clone(),
+                ref_tweet_time: ref_tweet_time.timestamp(),
+            });
         }
     }
-    println!("Parsed tweets with filter (quoted_tweet_tweetid, in_reply_to_tweetid): {:?}", tweets.len());
-    println!("Parsed tweets total: {:?}", count);
+    
+    println!("Parsed tweets total: {:?}", &tweets.len());
+    println!("Added tweets for export (retweets, replies): {:?}", &gpu_tweets.len());
+    println!("Detected missing tweets: {:?}", retweet_misses);
+    // 191152
+    println!("Writing output to {} now...", output_filename);
+    
+    for gpu_tweet in gpu_tweets {
+        wtr.serialize(gpu_tweet)?;
+    }
+    
+    wtr.flush()?;
     Ok(())
 }
 
@@ -121,7 +187,7 @@ fn main() {
 
     match mode {
         Mode::Default => {
-            if let Err(err) = read_dataset(filename) {
+            if let Err(err) = process_dataset(filename) {
                 println!("Error processing dataset: {}", err);
                 process::exit(1);
             }
