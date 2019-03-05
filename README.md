@@ -2,7 +2,7 @@
 
 _A mythical bird said by ancient writers to breed in a nest floating at sea at the winter solstice, charming the wind and waves into calm._
 
-Halcyon is a Twitter dataset processor, that builds an in-memory database of the dataset and exports certain data as GPU-friendly CSV files.
+Halcyon is a Twitter dataset processor, that builds an in-memory database of the dataset, runs specific analysis on it and exports certain data to GPU-friendly CSV files.
 
 ### Usage
 
