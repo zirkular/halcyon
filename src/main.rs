@@ -28,19 +28,52 @@ struct Week {
 struct Tweet {
     tweetid: String,
     tweet_time: String,
+    quote_count: String,
+    reply_count: String,
     like_count: String,
-    quoted_tweet_tweetid: String,
+    retweet_count: String,
     in_reply_to_tweetid: String,
+    quoted_tweet_tweetid: String,
     is_retweet: String,
     retweet_tweetid: String,
 }
 
 #[derive(Debug, Serialize, Eq, PartialEq)]
-struct GPUTweet {
-    tweet_id: i64,
+struct GPUTweetTime {
     tweet_time: i64,
-    ref_tweet_id: i64,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct GPUTweetScore {
+    tweet_score: u64,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+struct GPUTweetConnection {
+    tweet_time: i64,
     ref_tweet_time: i64,
+}
+
+fn unwrap_decimal(number_string: &String) -> f64 {
+    let number: f64 = match number_string.len() {
+        0 => 0.0,
+        _ => match number_string.parse() {
+            Ok(number) => number,
+            _ => 0.0,
+        },
+    };
+    return number;
+}
+
+fn unwrap_integer(number_string: &String) -> i64 {
+    let number: i64 = match number_string.len() {
+        0 => 0,
+        _ => match number_string.parse() {
+                Ok(number) => number,
+                _ => 0,
+            },
+    };
+    return number;
 }
 
 fn export_raw(filename: String, limit: u64) -> Result<(), Box<Error>> {
@@ -62,13 +95,19 @@ fn export_raw(filename: String, limit: u64) -> Result<(), Box<Error>> {
 }
 
 fn process_dataset(filename: String) -> Result<(), Box<Error>> {
-    let output_filename = String::from(filename.clone() + ".out");
+    let output_filename_tweets = String::from(filename.clone() + ".tweets");
+    let output_filename_scores = String::from(filename.clone() + ".scores");
+    let output_filename_connections = String::from(filename.clone() + ".connections");
     let mut retweet_misses = 0;
     let mut tweets: HashMap<i64, Tweet> = HashMap::new();
-    let mut gpu_tweets = Vec::new();
+    let mut gpu_tweets_time = Vec::new();
+    let mut gpu_tweets_score = Vec::new();
+    let mut gpu_tweets_connection = Vec::new();
 
     println!("Processing {} now. This may take a while...", filename);
-    let mut wtr = csv::Writer::from_path(output_filename.clone())?;
+    let mut wtr_tweets = csv::Writer::from_path(output_filename_tweets.clone())?;
+    let mut wtr_scores = csv::Writer::from_path(output_filename_scores.clone())?;
+    let mut wtr_connections = csv::Writer::from_path(output_filename_connections.clone())?;
     let mut rdr = csv::Reader::from_path(filename)?;
     let mut iter = rdr.deserialize();
 
@@ -78,58 +117,91 @@ fn process_dataset(filename: String) -> Result<(), Box<Error>> {
         tweets.insert(tweet_id, tweet);
     }
 
-    for (key, tweet) in &tweets {
-        let mut retweet_id: i64 = 0;
+    for (_key, tweet) in &tweets {
+        let mut id: i64 = 0;
         let mut retweet_time = NaiveDateTime::from_timestamp(0, 0);
-
+        
+        let quote_count: f64 = unwrap_decimal(&tweet.quote_count);
+        let reply_count: f64 = unwrap_decimal(&tweet.reply_count);
+        let like_count: f64 = unwrap_decimal(&tweet.like_count);
+        let retweet_count: f64 = unwrap_decimal(&tweet.retweet_count);
+        let score = quote_count + reply_count + like_count + retweet_count;
+        
         let is_retweet = match tweet.is_retweet.as_ref() {
             "True" => true,
             _ => false,
         };
-        let reply_to_tweetid: i64 = match tweet.in_reply_to_tweetid.len() {
-            0 => 0,
-            _ => match tweet.in_reply_to_tweetid.parse() {
-                Ok(number) => number,
-                _ => 0
-            },
-        };
-
+        let reply_to_tweetid: i64 = unwrap_integer(&tweet.in_reply_to_tweetid);
+        let quoted_tweet_tweetid: i64 = unwrap_integer(&tweet.quoted_tweet_tweetid);
+        let mut is_reply = false;
+        let mut is_quote = false;
+        
         if is_retweet {
-            retweet_id = tweet.retweet_tweetid.parse().unwrap();     
+            id = tweet.retweet_tweetid.parse().unwrap();     
         }
         if reply_to_tweetid > 0 {
-            retweet_id = reply_to_tweetid;
+            id = reply_to_tweetid;
+            is_reply = true;
+        }
+        if quoted_tweet_tweetid > 0 {
+            id = quoted_tweet_tweetid;
+            is_quote = true;
         }
 
-        if is_retweet || reply_to_tweetid > 0 {
-            match tweets.get(&retweet_id) {
+        if score > 0.0 || is_retweet || is_reply || is_quote {
+            let mut is_connected = true;
+            match tweets.get(&id) {
                 Some(ref retweet) => {
                     retweet_time = NaiveDateTime::parse_from_str(retweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
                 },
-                _ => retweet_misses = retweet_misses + 1,
+                _ => {
+                    retweet_misses = retweet_misses + 1;
+                    is_connected = false;
+                },
             }
             let ref_tweet_time = NaiveDateTime::parse_from_str(tweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
 
-            gpu_tweets.push(GPUTweet{
-                tweet_id: retweet_id,
-                tweet_time: retweet_time.timestamp(),
-                ref_tweet_id: key.clone(),
-                ref_tweet_time: ref_tweet_time.timestamp(),
+            gpu_tweets_time.push(GPUTweetTime {
+                tweet_time: ref_tweet_time.timestamp(),
             });
+
+            gpu_tweets_score.push(GPUTweetScore { 
+                tweet_score: score as u64,
+            });
+
+            if is_connected {
+                gpu_tweets_connection.push(GPUTweetConnection {
+                    tweet_time: retweet_time.timestamp(),
+                    ref_tweet_time: ref_tweet_time.timestamp(),
+                });
+            }
         }
     }
     
     println!("Parsed tweets total: {:?}", &tweets.len());
-    println!("Added tweets for export (retweets, replies): {:?}", &gpu_tweets.len());
-    println!("Detected missing tweets: {:?}", retweet_misses);
-    // 191152
-    println!("Writing output to {} now...", output_filename);
-    
-    for gpu_tweet in gpu_tweets {
-        wtr.serialize(gpu_tweet)?;
+    println!("Added tweets for export: {:?}", &gpu_tweets_time.len());
+    println!("Added scores for export: {:?}", &gpu_tweets_score.len());
+    println!("Added connections for export: {:?}", &gpu_tweets_connection.len());
+
+    println!("Writing output to {}...", output_filename_tweets);
+    for gpu_tweet in gpu_tweets_time {
+        wtr_tweets.serialize(gpu_tweet)?;
     }
-    
-    wtr.flush()?;
+    wtr_tweets.flush()?;
+
+    println!("Writing output to {}...", output_filename_scores);
+    for gpu_tweet in gpu_tweets_score {
+        wtr_scores.serialize(gpu_tweet)?;
+    }
+    wtr_scores.flush()?;
+
+    println!("Writing output to {}...", output_filename_connections);
+    for gpu_tweet in gpu_tweets_connection {
+        wtr_connections.serialize(gpu_tweet)?;
+    }
+    wtr_connections.flush()?;
+
+
     Ok(())
 }
 
