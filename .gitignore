@@ -3,4 +3,4 @@ Cargo.lock
 **/*.rs.bk
 *.csv
 *.csv.*
-
+*.zip
