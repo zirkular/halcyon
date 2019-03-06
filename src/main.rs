@@ -1,12 +1,14 @@
 extern crate csv;
 #[macro_use]
-extern crate serde_derive;
+extern crate serde;
 extern crate clap;
 extern crate chrono;
 
 use chrono::{NaiveDateTime};
 
 use clap::{Arg, App};
+
+use serde::Serialize;
 
 use std::collections::HashMap;
 use std::env;
@@ -19,12 +21,12 @@ use std::process;
 use std::time::Instant;
 
 
-#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Week {
     tweetid: String,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Tweet {
     tweetid: String,
     tweet_time: String,
@@ -38,17 +40,17 @@ struct Tweet {
     retweet_tweetid: String,
 }
 
-#[derive(Debug, Serialize, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug)]
 struct GPUTweetTime {
     tweet_time: i64,
 }
 
-#[derive(Debug, Serialize, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug)]
 struct GPUTweetScore {
     tweet_score: u64,
 }
 
-#[derive(Debug, Serialize, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug)]
 struct GPUTweetConnection {
     tweet_time: i64,
     ref_tweet_time: i64,
@@ -76,9 +78,9 @@ fn unwrap_integer(number_string: &String) -> i64 {
     return number;
 }
 
-fn export_raw(filename: String, limit: u64) -> Result<(), Box<Error>> {
-    let input = File::open(filename.clone())?;
-    let mut output = File::create(String::from(filename + "." + &limit.to_string()))?;
+fn export_raw(filename: &String, limit: u64) -> Result<(), Box<Error>> {
+    let input = File::open(filename)?;
+    let mut output = File::create(String::from(filename.clone() + "." + &limit.to_string()))?;
     let buffered = BufReader::new(input);
     let mut count = 0;
 
@@ -94,20 +96,29 @@ fn export_raw(filename: String, limit: u64) -> Result<(), Box<Error>> {
     Ok(())
 }
 
-fn process_dataset(filename: String) -> Result<(), Box<Error>> {
+fn write_csv<T: Serialize>(filename: &String, entries: &Vec<T>) -> Result<(), Box<Error>>
+{
+    let mut wtr = csv::Writer::from_path(filename)?;
+
+    println!("Writing output to {}...", filename);
+    for entry in entries {
+        wtr.serialize(entry)?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
+fn process_dataset(filename: &String) -> Result<(), Box<Error>> {
     let output_filename_tweets = String::from(filename.clone() + ".tweets");
     let output_filename_scores = String::from(filename.clone() + ".scores");
     let output_filename_connections = String::from(filename.clone() + ".connections");
-    let mut retweet_misses = 0;
+
     let mut tweets: HashMap<i64, Tweet> = HashMap::new();
     let mut gpu_tweets_time = Vec::new();
     let mut gpu_tweets_score = Vec::new();
     let mut gpu_tweets_connection = Vec::new();
 
     println!("Processing {} now. This may take a while...", filename);
-    let mut wtr_tweets = csv::Writer::from_path(output_filename_tweets.clone())?;
-    let mut wtr_scores = csv::Writer::from_path(output_filename_scores.clone())?;
-    let mut wtr_connections = csv::Writer::from_path(output_filename_connections.clone())?;
     let mut rdr = csv::Reader::from_path(filename)?;
     let mut iter = rdr.deserialize();
 
@@ -131,10 +142,12 @@ fn process_dataset(filename: String) -> Result<(), Box<Error>> {
             "True" => true,
             _ => false,
         };
-        let reply_to_tweetid: i64 = unwrap_integer(&tweet.in_reply_to_tweetid);
-        let quoted_tweet_tweetid: i64 = unwrap_integer(&tweet.quoted_tweet_tweetid);
+
         let mut is_reply = false;
+        let reply_to_tweetid: i64 = unwrap_integer(&tweet.in_reply_to_tweetid);
+        
         let mut is_quote = false;
+        let quoted_tweet_tweetid: i64 = unwrap_integer(&tweet.quoted_tweet_tweetid);
         
         if is_retweet {
             id = tweet.retweet_tweetid.parse().unwrap();     
@@ -148,16 +161,13 @@ fn process_dataset(filename: String) -> Result<(), Box<Error>> {
             is_quote = true;
         }
 
-        if score > 0.0 || is_retweet || is_reply || is_quote {
+        if score > 0.0 || is_retweet || is_reply || is_quote { 
             let mut is_connected = true;
             match tweets.get(&id) {
                 Some(ref retweet) => {
                     retweet_time = NaiveDateTime::parse_from_str(retweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
                 },
-                _ => {
-                    retweet_misses = retweet_misses + 1;
-                    is_connected = false;
-                },
+                _ => is_connected = false,
             }
             let ref_tweet_time = NaiveDateTime::parse_from_str(tweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
 
@@ -177,31 +187,15 @@ fn process_dataset(filename: String) -> Result<(), Box<Error>> {
             }
         }
     }
-    
     println!("Parsed tweets total: {:?}", &tweets.len());
     println!("Added tweets for export: {:?}", &gpu_tweets_time.len());
     println!("Added scores for export: {:?}", &gpu_tweets_score.len());
     println!("Added connections for export: {:?}", &gpu_tweets_connection.len());
 
-    println!("Writing output to {}...", output_filename_tweets);
-    for gpu_tweet in gpu_tweets_time {
-        wtr_tweets.serialize(gpu_tweet)?;
-    }
-    wtr_tweets.flush()?;
-
-    println!("Writing output to {}...", output_filename_scores);
-    for gpu_tweet in gpu_tweets_score {
-        wtr_scores.serialize(gpu_tweet)?;
-    }
-    wtr_scores.flush()?;
-
-    println!("Writing output to {}...", output_filename_connections);
-    for gpu_tweet in gpu_tweets_connection {
-        wtr_connections.serialize(gpu_tweet)?;
-    }
-    wtr_connections.flush()?;
-
-
+    write_csv(&output_filename_tweets, &gpu_tweets_time)?;
+    write_csv(&output_filename_scores, &gpu_tweets_score)?;
+    write_csv(&output_filename_connections, &gpu_tweets_connection)?;
+    
     Ok(())
 }
 
@@ -259,13 +253,13 @@ fn main() {
 
     match mode {
         Mode::Default => {
-            if let Err(err) = process_dataset(filename) {
+            if let Err(err) = process_dataset(&filename) {
                 println!("Error processing dataset: {}", err);
                 process::exit(1);
             }
         },
         Mode::ExportRaw => {
-            if let Err(err) = export_raw(filename, limit) {
+            if let Err(err) = export_raw(&filename, limit) {
                 println!("Error exporting raw dataset: {}", err);
                 process::exit(1);
             }
