@@ -28,6 +28,19 @@ pub mod import {
         };
         return number;
     }
+
+    pub fn unwrap_string_array(array_string: &String) -> Vec<&str> {
+        if array_string.len() == 0 {
+            return Vec::new();
+        } else if array_string.starts_with("[") {
+            let trimmed = array_string.trim_matches('[').trim_matches(']');
+            if trimmed.len() == 0 {
+                return Vec::new();
+            }
+            return trimmed.split(',').collect();
+        }
+        return Vec::new();
+    }
 }
 
 pub mod export {
@@ -53,6 +66,7 @@ pub mod export {
         pub quoted_tweet_tweetid: String,
         pub is_retweet: String,
         pub retweet_tweetid: String,
+        pub hashtags: String,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -69,6 +83,16 @@ pub mod export {
     pub struct GPUTweetConnection {
         pub tweet_time: i64,
         pub ref_tweet_time: i64,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct GPUHashtagTime {
+        pub hash_time: i64,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct GPUHashtagCount {
+        pub hash_count: u64,
     }
 
     pub fn write_csv<T: Serialize>(filename: &String, entries: &Vec<T>) -> Result<(), Box<Error>> {
@@ -105,11 +129,16 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     let output_filename_tweets = String::from(filename.clone() + ".tweets");
     let output_filename_scores = String::from(filename.clone() + ".scores");
     let output_filename_connections = String::from(filename.clone() + ".connections");
+    let output_filename_hashtags = String::from(filename.clone() + ".hashtags");
+    let output_filename_hashtags_count = String::from(filename.clone() + ".hashtags_count");
 
     let mut tweets: HashMap<i64, export::Tweet> = HashMap::new();
     let mut gpu_tweets_time = Vec::new();
     let mut gpu_tweets_score = Vec::new();
     let mut gpu_tweets_connection = Vec::new();
+    let mut gpu_hashtags_time = Vec::new();
+    let mut gpu_hashtags_count = Vec::new();
+    let mut hash_tags: HashMap<String, (i64, u64)> = HashMap::new();
 
     println!("Processing {} now. This may take a while...", filename);
     let mut rdr = csv::Reader::from_path(filename)?;
@@ -154,7 +183,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
             is_quote = true;
         }
 
-        if score > 0.0 || is_retweet || is_reply || is_quote { 
+        if score > 0.0 || is_retweet || is_reply || is_quote {
             let mut is_connected = true;
             match tweets.get(&id) {
                 Some(ref retweet) => {
@@ -168,7 +197,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
                 tweet_time: ref_tweet_time.timestamp(),
             });
 
-            gpu_tweets_score.push(export::GPUTweetScore { 
+            gpu_tweets_score.push(export::GPUTweetScore {
                 tweet_score: score as u64,
             });
 
@@ -179,15 +208,58 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
                 });
             }
         }
+
+        let tags = import::unwrap_string_array(&tweet.hashtags);
+        for tag in tags {
+            let tag_trimmed = tag.trim();
+            let tweet_time = NaiveDateTime::parse_from_str(tweet.tweet_time.as_ref(), "%Y-%m-%d %H:%M")?;
+            let mut timestamp = 0;
+            let mut count_accu = 0;
+            // println!("-------------------------------");
+            // println!("Processing tag: {}", tag_trimmed);
+            match hash_tags.get(tag_trimmed) {
+                Some(ref mut pair) => {
+                    timestamp = pair.0;
+                    count_accu = count_accu + pair.1 + 1;
+                    // println!("Tag found: {}", count_accu);
+                },
+                _ => {
+                    timestamp = tweet_time.timestamp();
+                    count_accu = 1;
+                },
+            }
+            // println!("Inserting tag: {}", timestamp);
+            // println!("Inserting tag: {}", count_accu);
+            hash_tags.insert(tag_trimmed.to_string(), (timestamp, count_accu));
+        }
     }
+
+    let mut hashtags_tmp = Vec::new();
+    for (_key, tag) in &hash_tags {
+        hashtags_tmp.push((tag.1, tag.0));
+    }
+    hashtags_tmp.sort_by(|a, b| b.cmp(a));
+
+    for tag in hashtags_tmp {
+        gpu_hashtags_time.push(export::GPUHashtagTime {
+            hash_time: tag.1,
+        });
+        gpu_hashtags_count.push(export::GPUHashtagCount {
+            hash_count: tag.0,
+        });
+    }
+
     println!("Parsed tweets total: {:?}", &tweets.len());
     println!("Added tweets for export: {:?}", &gpu_tweets_time.len());
     println!("Added scores for export: {:?}", &gpu_tweets_score.len());
     println!("Added connections for export: {:?}", &gpu_tweets_connection.len());
+    println!("Added hash tags for export: {:?}", &hash_tags.len());
 
     export::write_csv(&output_filename_tweets, &gpu_tweets_time)?;
     export::write_csv(&output_filename_scores, &gpu_tweets_score)?;
     export::write_csv(&output_filename_connections, &gpu_tweets_connection)?;
-    
+    export::write_csv(&output_filename_hashtags, &gpu_hashtags_time)?;
+    export::write_csv(&output_filename_hashtags_count, &gpu_hashtags_count)?;
+
     Ok(())
 }

@@ -4,3 +4,7 @@ Cargo.lock
 *.csv
 *.csv.*
 *.zip
+<<<<<<< HEAD
+=======
+
+>>>>>>> Adds hashtag processing.
