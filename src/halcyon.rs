@@ -86,14 +86,13 @@ pub mod export {
         pub ref_tweet_time: i64,
     }
 
-    ///
-    /// 
-    /// 
     #[derive(Serialize, Deserialize, Debug, Eq)]
     pub struct GPUHashtag {
         pub tweet_time: i64,
         pub hash_id: u64,
         pub offset: u64,
+        #[serde(skip_serializing)]
+        pub text: String,
     }
 
     impl Ord for GPUHashtag {
@@ -114,19 +113,19 @@ pub mod export {
         }
     }
     
-    ///
-    /// 
-    /// 
     #[derive(Serialize, Deserialize, Debug, Eq)]
     pub struct GPUHashtagId {
+        #[serde(skip_serializing)]
         pub hash_id: u64,
+        pub new_id: u64,
         pub text: String,
+        #[serde(skip_serializing)]
         pub count: u64,
     }
 
     impl Ord for GPUHashtagId {
         fn cmp(&self, other: &GPUHashtagId) -> Ordering {
-            self.hash_id.cmp(&other.hash_id)
+            self.new_id.cmp(&other.new_id)
         }
     }
 
@@ -138,10 +137,13 @@ pub mod export {
 
     impl PartialEq for GPUHashtagId {
         fn eq(&self, other: &GPUHashtagId) -> bool {
-            self.hash_id == other.hash_id
+            self.new_id == other.new_id
         }
     }
 
+    ///
+    /// 
+    /// 
     pub fn write_csv<T: Serialize>(filename: &String, entries: &Vec<T>) -> Result<(), Box<Error>> {
         let mut wtr = csv::Writer::from_path(filename)?;
 
@@ -153,6 +155,9 @@ pub mod export {
         Ok(())
     }
 
+    ///
+    /// 
+    /// 
     pub fn write_raw(filename: &String, limit: u64) -> Result<(), Box<Error>> {
         let input = File::open(filename)?;
         let mut output = File::create(String::from(filename.clone() + "." + &limit.to_string()))?;
@@ -220,7 +225,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
         let quoted_tweet_tweetid: i64 = import::unwrap_integer(&tweet.quoted_tweet_tweetid);
         
         if is_retweet {
-            id = tweet.retweet_tweetid.parse().unwrap();     
+            id = tweet.retweet_tweetid.parse().unwrap();
         }
         if reply_to_tweetid > 0 {
             id = reply_to_tweetid;
@@ -263,13 +268,10 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
         for tag in tags {
             let tag_trimmed = tag.trim();
             let mut count_accu = 0;
-            // println!("-------------------------------");
-            // println!("Processing tag: {}", tag_trimmed);
             match hash_tags.get(tag_trimmed) {
                 Some(id_count) => {
                     next_id = id_count.0;
                     count_accu = count_accu + id_count.1 + 1;
-                    // println!("Tag found: {}", count_accu);
                 },
                 _ => {
                     hash_tag_id = hash_tag_id + 1;
@@ -283,52 +285,77 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
                 tweet_time: tweet_time.timestamp(),
                 hash_id: next_id,
                 offset: 0,
+                text: tag_trimmed.to_string(),
             });
-            // println!("Inserting tag: {}", timestamp);
-            // println!("Inserting tag: {}", count_accu);
         }
     }
 
-    let min_count = 10;
+    // Filter hashtag ids
+    let min_count = 1000;
+    let mut id = 0;
+    let mut id_mapping: HashMap<u64, u64> = HashMap::new();
     for (key, pair) in &hash_tags {
-        gpu_hashtags_id.push(export::GPUHashtagId {
-            hash_id: pair.0,
-            text: key.clone(),
-            count: pair.1,
-        });
+        if pair.1 >= min_count {
+            gpu_hashtags_id.push(export::GPUHashtagId {
+                hash_id: pair.0,
+                new_id: id,
+                text: key.clone(),
+                count: pair.1,
+            });
+            id_mapping.insert(pair.0, id);
+            id = id + 1;
+        }
     }
     gpu_hashtags_id.sort_by(|a, b| a.cmp(b));
-    gpu_hashtags_id = gpu_hashtags_id.into_iter().filter(|tag| tag.count >= min_count).collect();
+    // gpu_hashtags_id = gpu_hashtags_id.into_iter().filter(|tag| tag.count >= min_count).collect();
 
+    // Filter hashtag timestamps
     let over_min_count = |tag: &export::GPUHashtag| -> bool {
-        // let count = match hash_tags.get(tag.text) {
-        //     Some(id_count) => {
-        //         next_id = id_count.0;
-        //         count_accu = count_accu + id_count.1 + 1;
-        //         // println!("Tag found: {}", count_accu);
-        //     },
-        //     _ => {
-        //         hash_tag_id = hash_tag_id + 1;
-        //         next_id = hash_tag_id;
-        //         count_accu = 1;
-        //     },
-        // };
-        // count > min_count
-        true
+        let count = match hash_tags.get(&tag.text) {
+            Some(id_count) => id_count.1,
+            _ => 0,
+        };
+        count > min_count
     };
     gpu_hashtags.sort_by(|a, b| a.cmp(b));
     gpu_hashtags = gpu_hashtags.into_iter().filter(over_min_count).collect();
+    
+    // Remapping of unique ids and offset correction
+    let mut cleaned_hashtags = Vec::new();
+    let mut iter = gpu_hashtags.iter().peekable();
+    let mut offset = 0;
+    while let Some(ref mut hashtag) = iter.next() {
+        let mut id = match id_mapping.get(&hashtag.hash_id) {
+            Some(new_id) => *new_id,
+            _ => 0,
+        };
+        cleaned_hashtags.push(export::GPUHashtag {
+            tweet_time: hashtag.tweet_time,
+            hash_id: id,
+            offset: offset,
+            text: hashtag.text.clone(),
+        });
 
+        if let Some(next_hashtag) = iter.peek() {
+            if hashtag.tweet_time == next_hashtag.tweet_time {
+                offset = offset + 1;
+            } else {
+                offset = 0;
+            }
+        }
+    }
+    
     println!("Parsed tweets total: {:?}", &tweets.len());
     println!("Added tweets for export: {:?}", &gpu_tweets_time.len());
     println!("Added scores for export: {:?}", &gpu_tweets_score.len());
     println!("Added connections for export: {:?}", &gpu_tweets_connection.len());
+    println!("Added hash tag times for export: {:?}", &cleaned_hashtags.len());
     println!("Added hash tags for export: {:?}", &gpu_hashtags_id.len());
 
     export::write_csv(&output_filename_tweets, &gpu_tweets_time)?;
     export::write_csv(&output_filename_scores, &gpu_tweets_score)?;
     export::write_csv(&output_filename_connections, &gpu_tweets_connection)?;
-    export::write_csv(&output_filename_hashtags, &gpu_hashtags)?;
+    export::write_csv(&output_filename_hashtags, &cleaned_hashtags)?;
     export::write_csv(&output_filename_hashtags_id, &gpu_hashtags_id)?;
 
     Ok(())
