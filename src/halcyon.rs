@@ -70,9 +70,34 @@ pub mod export {
         pub hashtags: String,
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Debug, Eq)]
     pub struct GPUTweetTime {
         pub tweet_time: i64,
+        #[serde(skip_serializing)]
+        pub tweet_score: u64,
+    }
+
+    impl Ord for GPUTweetTime {
+        fn cmp(&self, other: &GPUTweetTime) -> Ordering {
+            self.tweet_time.cmp(&other.tweet_time)
+        }
+    }
+
+    impl PartialOrd for GPUTweetTime {
+        fn partial_cmp(&self, other: &GPUTweetTime) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl PartialEq for GPUTweetTime {
+        fn eq(&self, other: &GPUTweetTime) -> bool {
+            self.tweet_time == other.tweet_time
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct GPUTweetSegment {
+        pub tweet_count: u64,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -179,6 +204,7 @@ pub mod export {
 
 pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     let output_filename_tweets = String::from(filename.clone() + ".tweets");
+    let output_filename_tweet_segments = String::from(filename.clone() + ".tweets.seg");
     let output_filename_scores = String::from(filename.clone() + ".scores");
     let output_filename_connections = String::from(filename.clone() + ".connections");
     let output_filename_hashtags = String::from(filename.clone() + ".hashtags");
@@ -186,6 +212,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
 
     let mut tweets: HashMap<i64, export::Tweet> = HashMap::new();
     let mut gpu_tweets_time = Vec::new();
+    let mut gpu_tweets_time_segments = Vec::new();
     let mut gpu_tweets_score = Vec::new();
     let mut gpu_tweets_connection = Vec::new();
     let mut gpu_hashtags = Vec::new();
@@ -248,9 +275,6 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
 
             gpu_tweets_time.push(export::GPUTweetTime {
                 tweet_time: ref_tweet_time.timestamp(),
-            });
-
-            gpu_tweets_score.push(export::GPUTweetScore {
                 tweet_score: score as u64,
             });
 
@@ -290,8 +314,39 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
         }
     }
 
+    // Sort tweets
+    gpu_tweets_time.sort_by(|a, b| a.cmp(b));
+
+    // Create segments
+    let mut segments = Vec::new();
+    for tweet in &gpu_tweets_time {
+        gpu_tweets_score.push(export::GPUTweetScore {
+            tweet_score: tweet.tweet_score,
+        });
+
+        if let Some(&tweet_time) = segments.first() {
+            if tweet.tweet_time >= tweet_time + 24 * 60 * 60 {
+                for _seg in &segments {
+                    gpu_tweets_time_segments.push(export::GPUTweetSegment {
+                        tweet_count: segments.len() as u64,
+                    });
+                }
+                segments.clear();
+                segments.push(tweet.tweet_time);
+            } else {
+                segments.push(tweet.tweet_time);
+            }
+        } else {
+            segments.push(tweet.tweet_time);
+        }
+    }
+    // TODO: Find missing timestamp and remove this !!! HACK !!!
+    gpu_tweets_time_segments.push(export::GPUTweetSegment {
+        tweet_count: 1,
+    });
+    
     // Filter hashtag ids
-    let min_count = 1000;
+    let min_count = 500;
     let mut id = 0;
     let mut id_mapping: HashMap<u64, u64> = HashMap::new();
     for (key, pair) in &hash_tags {
@@ -307,7 +362,6 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
         }
     }
     gpu_hashtags_id.sort_by(|a, b| a.cmp(b));
-    // gpu_hashtags_id = gpu_hashtags_id.into_iter().filter(|tag| tag.count >= min_count).collect();
 
     // Filter hashtag timestamps
     let over_min_count = |tag: &export::GPUHashtag| -> bool {
@@ -325,7 +379,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     let mut iter = gpu_hashtags.iter().peekable();
     let mut offset = 0;
     while let Some(ref mut hashtag) = iter.next() {
-        let mut id = match id_mapping.get(&hashtag.hash_id) {
+        let id = match id_mapping.get(&hashtag.hash_id) {
             Some(new_id) => *new_id,
             _ => 0,
         };
@@ -347,12 +401,14 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     
     println!("Parsed tweets total: {:?}", &tweets.len());
     println!("Added tweets for export: {:?}", &gpu_tweets_time.len());
+    println!("Added segments for export: {:?}", &gpu_tweets_time_segments.len());
     println!("Added scores for export: {:?}", &gpu_tweets_score.len());
     println!("Added connections for export: {:?}", &gpu_tweets_connection.len());
     println!("Added hash tag times for export: {:?}", &cleaned_hashtags.len());
     println!("Added hash tags for export: {:?}", &gpu_hashtags_id.len());
 
     export::write_csv(&output_filename_tweets, &gpu_tweets_time)?;
+    export::write_csv(&output_filename_tweet_segments, &gpu_tweets_time_segments)?;
     export::write_csv(&output_filename_scores, &gpu_tweets_score)?;
     export::write_csv(&output_filename_connections, &gpu_tweets_connection)?;
     export::write_csv(&output_filename_hashtags, &cleaned_hashtags)?;
