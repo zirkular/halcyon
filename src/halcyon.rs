@@ -118,6 +118,7 @@ pub mod export {
         pub tweet_time: i64,
         pub hash_id: u64,
         pub offset: u64,
+        pub segment: u64,
         #[serde(skip_serializing)]
         pub text: String,
     }
@@ -313,6 +314,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
                 tweet_time: tweet_time.timestamp(),
                 hash_id: next_id,
                 offset: 0,
+                segment: 0,
                 text: tag_trimmed.to_string(),
             });
         }
@@ -400,15 +402,23 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     let mut cleaned_hashtags = Vec::new();
     let mut iter = gpu_hashtags.iter().peekable();
     let mut offset = 0;
+    let mut segment = 0;
     while let Some(ref mut hashtag) = iter.next() {
         let id = match id_mapping.get(&hashtag.hash_id) {
             Some(new_id) => *new_id,
             _ => 0,
         };
+        match tweet_segment_map.get(&hashtag.tweet_time) {
+            Some(seg_id) => {
+                segment = *seg_id
+            },
+            _ => {},
+        }
         cleaned_hashtags.push(export::GPUHashtag {
             tweet_time: hashtag.tweet_time,
             hash_id: id,
             offset: offset,
+            segment: segment,
             text: hashtag.text.clone(),
         });
 
