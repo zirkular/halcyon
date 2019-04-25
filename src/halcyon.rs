@@ -108,7 +108,9 @@ pub mod export {
     #[derive(Serialize, Deserialize, Debug)]
     pub struct GPUTweetConnection {
         pub tweet_time: i64,
+        pub tweet_time_seg: u64,
         pub ref_tweet_time: i64,
+        pub ref_tweet_time_seg: u64,
     }
 
     #[derive(Serialize, Deserialize, Debug, Eq)]
@@ -281,7 +283,9 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
             if is_connected {
                 gpu_tweets_connection.push(export::GPUTweetConnection {
                     tweet_time: retweet_time.timestamp(),
+                    tweet_time_seg: 0,
                     ref_tweet_time: ref_tweet_time.timestamp(),
+                    ref_tweet_time_seg: 0,
                 });
             }
         }
@@ -319,6 +323,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
 
     // Create segments
     let mut segments = Vec::new();
+    let mut tweet_segment_map: HashMap<i64, u64> = HashMap::new();
     for tweet in &gpu_tweets_time {
         gpu_tweets_score.push(export::GPUTweetScore {
             tweet_score: tweet.tweet_score,
@@ -330,6 +335,7 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
                     gpu_tweets_time_segments.push(export::GPUTweetSegment {
                         tweet_count: segments.len() as u64,
                     });
+                    tweet_segment_map.insert(*_seg, gpu_tweets_time_segments.len() as u64);
                 }
                 segments.clear();
                 segments.push(tweet.tweet_time);
@@ -344,6 +350,22 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     gpu_tweets_time_segments.push(export::GPUTweetSegment {
         tweet_count: 1,
     });
+
+    // Set segments for connections.
+    for connection in &mut gpu_tweets_connection {
+        match tweet_segment_map.get(&connection.tweet_time) {
+            Some(seg_id) => {
+                connection.tweet_time_seg = *seg_id
+            },
+            _ => {},
+        }
+        match tweet_segment_map.get(&connection.ref_tweet_time) {
+            Some(seg_id) => {
+                connection.ref_tweet_time_seg = *seg_id
+            },
+            _ => {},
+        }
+    }
     
     // Filter hashtag ids
     let min_count = 500;
