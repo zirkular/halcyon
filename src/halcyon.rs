@@ -108,9 +108,9 @@ pub mod export {
     #[derive(Serialize, Deserialize, Debug)]
     pub struct GPUTweetConnection {
         pub tweet_time: i64,
-        pub tweet_time_seg: u64,
+        pub tweet_time_seg_count: u64,
         pub ref_tweet_time: i64,
-        pub ref_tweet_time_seg: u64,
+        pub ref_tweet_time_seg_count: u64,
     }
 
     #[derive(Serialize, Deserialize, Debug, Eq)]
@@ -283,9 +283,9 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
             if is_connected {
                 gpu_tweets_connection.push(export::GPUTweetConnection {
                     tweet_time: retweet_time.timestamp(),
-                    tweet_time_seg: 0,
+                    tweet_time_seg_count: 0,
                     ref_tweet_time: ref_tweet_time.timestamp(),
-                    ref_tweet_time_seg: 0,
+                    ref_tweet_time_seg_count: 0,
                 });
             }
         }
@@ -322,28 +322,32 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
     gpu_tweets_time.sort_by(|a, b| a.cmp(b));
 
     // Create segments
-    let mut segments = Vec::new();
-    let mut tweet_segment_map: HashMap<i64, u64> = HashMap::new();
+    let mut segment_tweets = Vec::new();
+    let mut segment_id = 0;
+    let mut tweet_segment_ids: HashMap<i64, u64> = HashMap::new();
+    let mut tweet_segment_counts: HashMap<i64, u64> = HashMap::new();
     for tweet in &gpu_tweets_time {
         gpu_tweets_score.push(export::GPUTweetScore {
             tweet_score: tweet.tweet_score,
         });
 
-        if let Some(&tweet_time) = segments.first() {
+        if let Some(&tweet_time) = segment_tweets.first() {
             if tweet.tweet_time >= tweet_time + 24 * 60 * 60 {
-                for _seg in &segments {
+                for _seg in &segment_tweets {
                     gpu_tweets_time_segments.push(export::GPUTweetSegment {
-                        tweet_count: segments.len() as u64,
+                        tweet_count: segment_tweets.len() as u64,
                     });
-                    tweet_segment_map.insert(*_seg, gpu_tweets_time_segments.len() as u64);
+                    tweet_segment_ids.insert(*_seg, segment_id);
+                    tweet_segment_counts.insert(*_seg, segment_tweets.len() as u64);
                 }
-                segments.clear();
-                segments.push(tweet.tweet_time);
+                segment_id = segment_id + 1;
+                segment_tweets.clear();
+                segment_tweets.push(tweet.tweet_time);
             } else {
-                segments.push(tweet.tweet_time);
+                segment_tweets.push(tweet.tweet_time);
             }
         } else {
-            segments.push(tweet.tweet_time);
+            segment_tweets.push(tweet.tweet_time);
         }
     }
     // TODO: Find missing timestamp and remove this !!! HACK !!!
@@ -351,17 +355,17 @@ pub fn process_and_export(filename: &String) -> Result<(), Box<Error>> {
         tweet_count: 1,
     });
 
-    // Set segments for connections.
+    // Set segments tweet counts for connections.
     for connection in &mut gpu_tweets_connection {
-        match tweet_segment_map.get(&connection.tweet_time) {
+        match tweet_segment_counts.get(&connection.tweet_time) {
             Some(seg_id) => {
-                connection.tweet_time_seg = *seg_id
+                connection.tweet_time_seg_count = *seg_id
             },
             _ => {},
         }
-        match tweet_segment_map.get(&connection.ref_tweet_time) {
+        match tweet_segment_counts.get(&connection.ref_tweet_time) {
             Some(seg_id) => {
-                connection.ref_tweet_time_seg = *seg_id
+                connection.ref_tweet_time_seg_count = *seg_id
             },
             _ => {},
         }
